@@ -1,384 +1,573 @@
 // ============================================
-// MINDFLOW - Backend Starter (Express + SQLite)
+// MINDFLOW - Frontend Starter (React)
 // ============================================
 
-const express = require('express');
-const sqlite3 = require('sqlite3');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const cors = require('cors');
-require('dotenv').config();
+import React, { useState, useEffect } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import axios from 'axios';
 
-const app = express();
-const db = new sqlite3.Database('./wellness.db');
-
-// Middleware
-app.use(cors());
-app.use(express.json());
-
-const SECRET = process.env.JWT_SECRET || 'your_secret_key_here';
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000';
 
 // ============================================
-// DATABASE INITIALIZATION
+// CONTEXT FOR AUTH STATE
 // ============================================
 
-const initDB = () => {
-  db.serialize(() => {
-    // Users table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        plan TEXT DEFAULT 'free',
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        timezone TEXT DEFAULT 'UTC'
-      )
-    `);
+const AuthContext = React.createContext();
 
-    // Habits table
-    db.run(`
-      CREATE TABLE IF NOT EXISTS habits (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        name TEXT NOT NULL,
-        category TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id)
-      )
-    `);
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(null);
+  const [token, setToken] = useState(localStorage.getItem('token'));
 
-    // Logs table (daily entries)
-    db.run(`
-      CREATE TABLE IF NOT EXISTS logs (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER NOT NULL,
-        habit_id INTEGER NOT NULL,
-        value REAL NOT NULL,
-        notes TEXT,
-        date DATE NOT NULL,
-        logged_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY(user_id) REFERENCES users(id),
-        FOREIGN KEY(habit_id) REFERENCES habits(id)
-      )
-    `);
+  const login = (newToken, userId, plan) => {
+    setToken(newToken);
+    setUser({ id: userId, plan });
+    localStorage.setItem('token', newToken);
+  };
 
-    console.log('✅ Database initialized');
-  });
+  const logout = () => {
+    setToken(null);
+    setUser(null);
+    localStorage.removeItem('token');
+  };
+
+  return (
+    <AuthContext.Provider value={{ user, token, login, logout }}>
+      {children}
+    </AuthContext.Provider>
+  );
 };
 
 // ============================================
-// MIDDLEWARE UTILITIES
+// SIGNUP PAGE
 // ============================================
 
-const verifyToken = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token' });
-  
-  try {
-    const decoded = jwt.verify(token, SECRET);
-    req.userId = decoded.id;
-    next();
-  } catch (err) {
-    return res.status(401).json({ error: 'Invalid token' });
-  }
-};
+const SignupPage = ({ onSignup }) => {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
 
-const dbRun = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function(err) {
-      if (err) reject(err);
-      else resolve(this);
-    });
-  });
-};
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+    setError('');
 
-const dbGet = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-};
+    try {
+      const { data } = await axios.post(`${API_URL}/auth/signup`, {
+        email,
+        password,
+      });
 
-const dbAll = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-};
-
-// ============================================
-// AUTH ROUTES
-// ============================================
-
-// SIGNUP
-app.post('/auth/signup', async (req, res) => {
-  const { email, password } = req.body;
-  
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
-  }
-
-  try {
-    const hashedPassword = await bcrypt.hash(password, 10);
-    
-    const result = await dbRun(
-      'INSERT INTO users (email, password_hash) VALUES (?, ?)',
-      [email, hashedPassword]
-    );
-
-    const token = jwt.sign({ id: result.lastID, email }, SECRET);
-    
-    // Create default habits for new users
-    const defaultHabits = ['Sleep', 'Mood', 'Exercise', 'Meditation'];
-    for (const habit of defaultHabits) {
-      await dbRun(
-        'INSERT INTO habits (user_id, name, category) VALUES (?, ?, ?)',
-        [result.lastID, habit, 'health']
-      );
+      onSignup(data.token, data.userId);
+    } catch (err) {
+      setError(err.response?.data?.error || 'Signup failed');
+    } finally {
+      setLoading(false);
     }
+  };
 
-    res.status(201).json({ token, userId: result.lastID });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Signup failed' });
-  }
-});
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center p-4">
+      <div className="bg-white rounded-lg shadow-lg p-8 w-full max-w-md">
+        <h1 className="text-3xl font-bold mb-2">MindFlow</h1>
+        <p className="text-gray-600 mb-6">Your personal wellness companion</p>
 
-// LOGIN
-app.post('/auth/login', async (req, res) => {
-  const { email, password } = req.body;
-  
-  if (!email || !password) {
-    return res.status(400).json({ error: 'Email and password required' });
-  }
+        <form onSubmit={handleSignup} className="space-y-4">
+          {error && (
+            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-2 rounded">
+              {error}
+            </div>
+          )}
 
-  try {
-    const user = await dbGet('SELECT * FROM users WHERE email = ?', [email]);
-    
-    if (!user) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+          <div>
+            <label className="block text-sm font-medium mb-1">Email</label>
+            <input
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+              required
+            />
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Password</label>
+            <input
+              type="password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              className="w-full border border-gray-300 rounded px-3 py-2"
+              required
+            />
+          </div>
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded disabled:opacity-50"
+          >
+            {loading ? 'Creating account...' : 'Sign Up'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// DASHBOARD (MAIN PAGE)
+// ============================================
+
+const Dashboard = () => {
+  const { user, token, logout } = React.useContext(AuthContext);
+  const [habits, setHabits] = useState([]);
+  const [moodData, setMoodData] = useState([]);
+  const [streaks, setStreaks] = useState([]);
+  const [showLogModal, setShowLogModal] = useState(false);
+  const [activeTab, setActiveTab] = useState('dashboard'); // 'dashboard', 'analytics', 'insights'
+  const [loading, setLoading] = useState(true);
+
+  const axiosConfig = {
+    headers: { Authorization: `Bearer ${token}` },
+  };
+
+  // Load data on mount
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  const loadData = async () => {
+    try {
+      setLoading(true);
+      const [habitsRes, moodRes, streaksRes] = await Promise.all([
+        axios.get(`${API_URL}/habits`, axiosConfig),
+        axios.get(`${API_URL}/analytics/mood`, axiosConfig),
+        axios.get(`${API_URL}/analytics/streaks`, axiosConfig),
+      ]);
+
+      setHabits(habitsRes.data);
+      setMoodData(moodRes.data);
+      setStreaks(streaksRes.data);
+    } catch (err) {
+      console.error('Failed to load data', err);
+    } finally {
+      setLoading(false);
     }
+  };
 
-    const passwordMatch = await bcrypt.compare(password, user.password_hash);
-    
-    if (!passwordMatch) {
-      return res.status(401).json({ error: 'Invalid credentials' });
-    }
-
-    const token = jwt.sign({ id: user.id, email: user.email }, SECRET);
-    res.json({ token, userId: user.id, plan: user.plan });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Login failed' });
+  if (loading) {
+    return <div className="flex items-center justify-center h-screen">Loading...</div>;
   }
-});
+
+  return (
+    <div className="min-h-screen bg-gray-50">
+      {/* HEADER */}
+      <header className="bg-white shadow">
+        <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-2xl font-bold text-blue-600">🏃 MindFlow</h1>
+          <button
+            onClick={logout}
+            className="text-gray-600 hover:text-gray-900"
+          >
+            Logout
+          </button>
+        </div>
+      </header>
+
+      {/* TABS */}
+      <div className="bg-white border-b">
+        <div className="max-w-6xl mx-auto px-4">
+          <div className="flex gap-4">
+            {['dashboard', 'analytics', 'insights'].map((tab) => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                className={`py-3 px-4 border-b-2 capitalize font-medium ${
+                  activeTab === tab
+                    ? 'border-blue-500 text-blue-600'
+                    : 'border-transparent text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* CONTENT */}
+      <main className="max-w-6xl mx-auto px-4 py-8">
+        {activeTab === 'dashboard' && (
+          <DashboardTab
+            habits={habits}
+            onLogClick={() => setShowLogModal(true)}
+            onRefresh={loadData}
+          />
+        )}
+
+        {activeTab === 'analytics' && (
+          <AnalyticsTab moodData={moodData} streaks={streaks} />
+        )}
+
+        {activeTab === 'insights' && (
+          <InsightsTab isPremium={user?.plan === 'premium'} />
+        )}
+      </main>
+
+      {/* LOG MODAL */}
+      {showLogModal && (
+        <LogModal
+          habits={habits}
+          onClose={() => setShowLogModal(false)}
+          onLogSubmit={() => {
+            setShowLogModal(false);
+            loadData();
+          }}
+        />
+      )}
+    </div>
+  );
+};
 
 // ============================================
-// HABIT ROUTES
+// DASHBOARD TAB
 // ============================================
 
-// GET ALL HABITS FOR USER
-app.get('/habits', verifyToken, async (req, res) => {
-  try {
-    const habits = await dbAll(
-      'SELECT * FROM habits WHERE user_id = ? ORDER BY created_at DESC',
-      [req.userId]
-    );
-    res.json(habits);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+const DashboardTab = ({ habits, onLogClick, onRefresh }) => {
+  return (
+    <div className="space-y-6">
+      {/* QUICK LOG SECTION */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-bold mb-4">📊 Today's Check-in</h2>
+        <button
+          onClick={onLogClick}
+          className="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded"
+        >
+          + Log Habit
+        </button>
+      </div>
 
-// CREATE HABIT
-app.post('/habits', verifyToken, async (req, res) => {
-  const { name, category } = req.body;
-  
-  try {
-    const result = await dbRun(
-      'INSERT INTO habits (user_id, name, category) VALUES (?, ?, ?)',
-      [req.userId, name, category || 'health']
-    );
-    
-    res.status(201).json({ id: result.lastID, name, category });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// DELETE HABIT
-app.delete('/habits/:id', verifyToken, async (req, res) => {
-  try {
-    await dbRun('DELETE FROM habits WHERE id = ? AND user_id = ?', 
-      [req.params.id, req.userId]
-    );
-    res.json({ success: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+      {/* HABIT LIST */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-bold mb-4">My Habits</h2>
+        <div className="space-y-3">
+          {habits.length === 0 ? (
+            <p className="text-gray-500">No habits yet. Create one to get started!</p>
+          ) : (
+            habits.map((habit) => (
+              <div key={habit.id} className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                <span className="font-medium">{habit.name}</span>
+                <span className="text-sm text-gray-500">{habit.category}</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ============================================
-// LOGGING ROUTES
+// ANALYTICS TAB
 // ============================================
 
-// LOG HABIT ENTRY
-app.post('/logs', verifyToken, async (req, res) => {
-  const { habit_id, value, notes } = req.body;
-  const today = new Date().toISOString().split('T')[0];
+const AnalyticsTab = ({ moodData, streaks }) => {
+  return (
+    <div className="space-y-6">
+      {/* MOOD CHART */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-bold mb-4">📈 Mood Trend (7 Days)</h2>
+        {moodData.length > 0 ? (
+          <ResponsiveContainer width="100%" height={300}>
+            <LineChart data={moodData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="date" />
+              <YAxis domain={[1, 10]} />
+              <Tooltip />
+              <Line
+                type="monotone"
+                dataKey="avg_mood"
+                stroke="#3b82f6"
+                strokeWidth={2}
+                dot={{ fill: '#3b82f6', r: 5 }}
+              />
+            </LineChart>
+          </ResponsiveContainer>
+        ) : (
+          <p className="text-gray-500">No mood data yet. Log some entries to see trends!</p>
+        )}
+      </div>
 
-  try {
-    // Check if entry already exists for today
-    const existing = await dbGet(
-      'SELECT id FROM logs WHERE user_id = ? AND habit_id = ? AND date = ?',
-      [req.userId, habit_id, today]
-    );
-
-    if (existing) {
-      // Update existing
-      await dbRun(
-        'UPDATE logs SET value = ?, notes = ? WHERE id = ?',
-        [value, notes, existing.id]
-      );
-    } else {
-      // Create new
-      await dbRun(
-        'INSERT INTO logs (user_id, habit_id, value, notes, date) VALUES (?, ?, ?, ?, ?)',
-        [req.userId, habit_id, value, notes, today]
-      );
-    }
-
-    res.json({ success: true, date: today });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET LOGS (last N days)
-app.get('/logs', verifyToken, async (req, res) => {
-  const days = req.query.days || 7;
-  
-  try {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    const dateStr = startDate.toISOString().split('T')[0];
-
-    const logs = await dbAll(
-      `SELECT l.*, h.name as habit_name FROM logs l
-       JOIN habits h ON l.habit_id = h.id
-       WHERE l.user_id = ? AND l.date >= ?
-       ORDER BY l.date DESC`,
-      [req.userId, dateStr]
-    );
-
-    res.json(logs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// GET LOGS FOR SPECIFIC HABIT
-app.get('/logs/habit/:id', verifyToken, async (req, res) => {
-  const days = req.query.days || 7;
-  
-  try {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - days);
-    const dateStr = startDate.toISOString().split('T')[0];
-
-    const logs = await dbAll(
-      `SELECT * FROM logs WHERE user_id = ? AND habit_id = ? AND date >= ?
-       ORDER BY date DESC`,
-      [req.userId, req.params.id, dateStr]
-    );
-
-    res.json(logs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+      {/* STREAKS */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-bold mb-4">🔥 Streaks</h2>
+        <div className="space-y-3">
+          {streaks.length === 0 ? (
+            <p className="text-gray-500">No streaks yet.</p>
+          ) : (
+            streaks.map((streak, idx) => (
+              <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded">
+                <span className="font-medium">{streak.habit}</span>
+                <span className="text-lg font-bold text-orange-500">{streak.streak} 🔥</span>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
 
 // ============================================
-// ANALYTICS ROUTES
+// INSIGHTS TAB
 // ============================================
 
-// MOOD TREND (last 7 days)
-app.get('/analytics/mood', verifyToken, async (req, res) => {
-  try {
-    const startDate = new Date();
-    startDate.setDate(startDate.getDate() - 7);
-    const dateStr = startDate.toISOString().split('T')[0];
-
-    const moodLogs = await dbAll(
-      `SELECT date, AVG(value) as avg_mood FROM logs l
-       JOIN habits h ON l.habit_id = h.id
-       WHERE l.user_id = ? AND h.name = 'Mood' AND l.date >= ?
-       GROUP BY l.date
-       ORDER BY l.date ASC`,
-      [req.userId, dateStr]
+const InsightsTab = ({ isPremium }) => {
+  if (!isPremium) {
+    return (
+      <div className="bg-white rounded-lg shadow p-6 text-center">
+        <h2 className="text-xl font-bold mb-4">🤖 AI Insights</h2>
+        <p className="text-gray-600 mb-4">
+          Unlock AI-powered insights about what affects your mood and health.
+        </p>
+        <button className="bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-6 rounded">
+          Upgrade to Premium - $9.99/month
+        </button>
+      </div>
     );
-
-    res.json(moodLogs);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
   }
-});
 
-// STREAKS
-app.get('/analytics/streaks', verifyToken, async (req, res) => {
-  try {
-    const habits = await dbAll(
-      'SELECT id, name FROM habits WHERE user_id = ?',
-      [req.userId]
-    );
+  return (
+    <div className="bg-white rounded-lg shadow p-6">
+      <h2 className="text-xl font-bold mb-4">🤖 AI Insights</h2>
+      <div className="space-y-4">
+        <div className="p-4 bg-blue-50 border-l-4 border-blue-500 rounded">
+          <p className="font-medium">🎯 Sleep & Mood Correlation</p>
+          <p className="text-sm text-gray-600 mt-1">
+            You tend to have 0.23 points higher mood on days you sleep 7+ hours.
+          </p>
+        </div>
+        <div className="p-4 bg-green-50 border-l-4 border-green-500 rounded">
+          <p className="font-medium">💪 Exercise Impact</p>
+          <p className="text-sm text-gray-600 mt-1">
+            Exercise correlates strongly (0.54) with mood improvement the next day.
+          </p>
+        </div>
+        <div className="p-4 bg-purple-50 border-l-4 border-purple-500 rounded">
+          <p className="font-medium">🧘 Meditation Consistency</p>
+          <p className="text-sm text-gray-600 mt-1">
+            Your best weeks include 4+ meditation sessions. Consider a daily routine.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
 
-    const streaks = [];
-    
-    for (const habit of habits) {
-      const logs = await dbAll(
-        `SELECT date FROM logs WHERE user_id = ? AND habit_id = ?
-         ORDER BY date DESC LIMIT 100`,
-        [req.userId, habit.id]
-      );
+// ============================================
+// LOG MODAL
+// ============================================
 
-      let streak = 0;
-      let currentDate = new Date();
-      currentDate = new Date(currentDate.toISOString().split('T')[0]);
+const LogModal = ({ habits, onClose, onLogSubmit }) => {
+  const { token } = React.useContext(AuthContext);
+  const [formData, setFormData] = useState({
+    sleep: 7,
+    mood: 5,
+    exercise: false,
+    meditation: 0,
+    notes: '',
+  });
+  const [loading, setLoading] = useState(false);
 
-      for (const log of logs) {
-        const logDate = new Date(log.date);
-        
-        if (currentDate.getTime() === logDate.getTime() || 
-            currentDate.getTime() - logDate.getTime() === 86400000) {
-          streak++;
-          currentDate = logDate;
-        } else {
-          break;
-        }
+  const axiosConfig = {
+    headers: { Authorization: `Bearer ${token}` },
+  };
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setLoading(true);
+
+    try {
+      // Log sleep
+      const sleepHabit = habits.find((h) => h.name === 'Sleep');
+      if (sleepHabit) {
+        await axios.post(
+          `${API_URL}/logs`,
+          { habit_id: sleepHabit.id, value: formData.sleep, notes: formData.notes },
+          axiosConfig
+        );
       }
 
-      streaks.push({ habit: habit.name, streak });
+      // Log mood
+      const moodHabit = habits.find((h) => h.name === 'Mood');
+      if (moodHabit) {
+        await axios.post(
+          `${API_URL}/logs`,
+          { habit_id: moodHabit.id, value: formData.mood },
+          axiosConfig
+        );
+      }
+
+      // Log exercise
+      const exerciseHabit = habits.find((h) => h.name === 'Exercise');
+      if (exerciseHabit && formData.exercise) {
+        await axios.post(
+          `${API_URL}/logs`,
+          { habit_id: exerciseHabit.id, value: 1 },
+          axiosConfig
+        );
+      }
+
+      // Log meditation
+      const meditationHabit = habits.find((h) => h.name === 'Meditation');
+      if (meditationHabit && formData.meditation > 0) {
+        await axios.post(
+          `${API_URL}/logs`,
+          { habit_id: meditationHabit.id, value: formData.meditation },
+          axiosConfig
+        );
+      }
+
+      onLogSubmit();
+    } catch (err) {
+      console.error('Failed to log', err);
+    } finally {
+      setLoading(false);
     }
+  };
 
-    res.json(streaks);
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg shadow-lg p-6 w-full max-w-md">
+        <h2 className="text-2xl font-bold mb-4">Log Your Day</h2>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          {/* SLEEP */}
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Sleep: {formData.sleep} hours
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="12"
+              step="0.5"
+              value={formData.sleep}
+              onChange={(e) => setFormData({ ...formData, sleep: parseFloat(e.target.value) })}
+              className="w-full"
+            />
+          </div>
+
+          {/* MOOD */}
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Mood: {formData.mood}/10
+            </label>
+            <input
+              type="range"
+              min="1"
+              max="10"
+              value={formData.mood}
+              onChange={(e) => setFormData({ ...formData, mood: parseInt(e.target.value) })}
+              className="w-full"
+            />
+          </div>
+
+          {/* EXERCISE */}
+          <div className="flex items-center">
+            <input
+              type="checkbox"
+              id="exercise"
+              checked={formData.exercise}
+              onChange={(e) => setFormData({ ...formData, exercise: e.target.checked })}
+              className="mr-2"
+            />
+            <label htmlFor="exercise" className="text-sm font-medium">
+              I exercised today
+            </label>
+          </div>
+
+          {/* MEDITATION */}
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Meditation: {formData.meditation} minutes
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="60"
+              step="5"
+              value={formData.meditation}
+              onChange={(e) => setFormData({ ...formData, meditation: parseInt(e.target.value) })}
+              className="w-full"
+            />
+          </div>
+
+          {/* NOTES */}
+          <div>
+            <label className="block text-sm font-medium mb-1">Notes (optional)</label>
+            <textarea
+              value={formData.notes}
+              onChange={(e) => setFormData({ ...formData, notes: e.target.value })}
+              className="w-full border border-gray-300 rounded px-3 py-2 text-sm"
+              rows="3"
+              placeholder="How are you feeling?"
+            />
+          </div>
+
+          {/* BUTTONS */}
+          <div className="flex gap-3 mt-6">
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex-1 border border-gray-300 text-gray-700 font-bold py-2 rounded hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 rounded disabled:opacity-50"
+            >
+              {loading ? 'Saving...' : 'Log Entry'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+};
+
+// ============================================
+// MAIN APP COMPONENT
+// ============================================
+
+export default function App() {
+  const { user, login } = React.useContext(AuthContext) || { user: null, login: () => {} };
+
+  if (!user) {
+    return <SignupPage onSignup={login} />;
   }
-});
+
+  return <Dashboard />;
+}
 
 // ============================================
-// START SERVER
+// ROOT RENDER
 // ============================================
 
-const PORT = process.env.PORT || 5000;
+// In your main.jsx or index.js:
+/*
+import React from 'react'
+import ReactDOM from 'react-dom/client'
+import App, { AuthProvider } from './App'
+import './index.css'
 
-initDB();
-
-app.listen(PORT, () => {
-  console.log(`🚀 MindFlow API running on http://localhost:${PORT}`);
-});
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <React.StrictMode>
+    <AuthProvider>
+      <App />
+    </AuthProvider>
+  </React.StrictMode>
+)
+*/
